@@ -8,6 +8,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <libmemcached/memcached.h>
+#include <openssl/sha.h>
 
 #include "pool.h"
 #include "pqc.h"
@@ -259,7 +260,6 @@ pqc_buf_get(void)
   return buf;
 }
 
-
 static char *
 encode_key(const char *s, char *buf, size_t buflen)
 {
@@ -278,6 +278,21 @@ encode_key(const char *s, char *buf, size_t buflen)
     else
       buf[i] = s[i];
   }
+
+  unsigned char temp[SHA_DIGEST_LENGTH];
+  char hex[SHA_DIGEST_LENGTH*2];
+
+  memset(hex, 0x0, SHA_DIGEST_LENGTH*2);
+  memset(temp, 0x0, SHA_DIGEST_LENGTH);
+
+  SHA1((unsigned char *)buf, strlen(buf), temp);
+
+  for(i=0; i<SHA_DIGEST_LENGTH; i++)
+  {
+    sprintf((char*)&(hex[i*2]), "%02x", temp[i]);
+  }
+
+  sprintf(buf, "pqcd_%s", hex);
 
   pool_debug("encode_key: `%s' -> `%s'", s, buf);
 
@@ -314,6 +329,9 @@ int
 pqc_set_cache(POOL_CONNECTION *frontend, const char *query, const char *data, size_t datalen)
 {
   char tmpkey[PQC_MAX_KEY];
+  char *sha_encode_key;
+
+  sha_encode_key = malloc(SHA_DIGEST_LENGTH * 2 + 7);
 
   if ( !IsQueryCacheEnabled )
     return 0;
@@ -329,14 +347,12 @@ pqc_set_cache(POOL_CONNECTION *frontend, const char *query, const char *data, si
     char tmp[PQC_MAX_KEY];
 
     snprintf(tmp, sizeof(tmp), "%s %s", frontend->database, query);
-    encode_key(tmp, tmpkey, sizeof(tmpkey));
-  }
-  else
-  {
-    encode_key(query, tmpkey, sizeof(tmpkey));
   }
 
-  rc = memcached_set(memc, tmpkey, strlen(tmpkey), data, datalen, pool_config.query_cache_expiration, 0);
+  sha_encode_key = encode_key(query, tmpkey, sizeof(query));
+  rc = memcached_set(memc, sha_encode_key, strlen(sha_encode_key), data, datalen, pool_config.query_cache_expiration, 0);
+
+  pool_debug("pqc_set_cache: sha_encode_key -> '%s'", sha_encode_key);
 
   if (rc != MEMCACHED_SUCCESS)
   {
@@ -355,6 +371,9 @@ pqc_get_cache(POOL_CONNECTION *frontend, const char *query, char **buf, size_t *
   uint32_t flags2;
   char *ptr;
   char tmpkey[PQC_MAX_KEY];
+  char *sha_encode_key;
+
+  sha_encode_key = malloc(SHA_DIGEST_LENGTH * 2 + 7);
 
   if ( !IsQueryCacheEnabled )
     return 0;
@@ -367,14 +386,12 @@ pqc_get_cache(POOL_CONNECTION *frontend, const char *query, char **buf, size_t *
     char tmp[PQC_MAX_KEY];
 
     snprintf(tmp, sizeof(tmp), "%s %s", frontend->database, query);
-    encode_key(tmp, tmpkey, sizeof(tmpkey));
-  }
-  else
-  {
-    encode_key(query, tmpkey, sizeof(tmpkey));
   }
 
-  ptr = memcached_get(memc, tmpkey, strlen(tmpkey), len, &flags2, &rc);
+  sha_encode_key = encode_key(query, tmpkey, sizeof(query));
+  ptr = memcached_get(memc, sha_encode_key, strlen(sha_encode_key), len, &flags2, &rc);
+
+  pool_debug("pqc_get_cache: sha_encode_key -> '%s'", sha_encode_key);
 
   if (rc != MEMCACHED_SUCCESS)
   {
